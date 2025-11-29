@@ -49,17 +49,17 @@ const TELEGRAM_CONFIG = {
 // Store processed transactions to avoid duplicate notifications
 const processedTransactions = new Set();
 
-// Function to send Telegram notification
-async function sendTelegramNotification(amount, walletAddress, transactionId) {
+// Function to send Telegram notification when server sends TRX to user
+async function sendTelegramNotification(amount, userWalletAddress, transactionId) {
     try {
         if (!TELEGRAM_CONFIG.botToken || !TELEGRAM_CONFIG.chatId) {
             console.warn('Telegram bot token or chat ID not configured. Skipping notification.');
             return false;
         }
 
-        const message = `🔔 *TRX Top-Up Detected*\n\n` +
-                       `💰 *Amount:* ${amount} TRX\n` +
-                       `👤 *Wallet Address:* \`${walletAddress}\`\n` +
+        const message = `🔔 *TRX Top-Up Sent*\n\n` +
+                       `💰 *Amount Sent:* ${amount} TRX\n` +
+                       `👤 *User Wallet Address:* \`${userWalletAddress}\`\n` +
                        `🔗 *Transaction ID:* \`${transactionId}\`\n` +
                        `⏰ *Time:* ${new Date().toLocaleString()}`;
 
@@ -72,7 +72,7 @@ async function sendTelegramNotification(amount, walletAddress, transactionId) {
         });
 
         if (response.data.ok) {
-            console.log(`✅ Telegram notification sent successfully for ${amount} TRX to ${walletAddress}`);
+            console.log(`✅ Telegram notification sent successfully: ${amount} TRX sent to ${userWalletAddress}`);
             return true;
         } else {
             console.error('Failed to send Telegram notification:', response.data);
@@ -84,40 +84,40 @@ async function sendTelegramNotification(amount, walletAddress, transactionId) {
     }
 }
 
-// Function to check for incoming TRX transactions (top-ups)
-async function checkForTopUps(walletAddress, limit = 20) {
+// Function to check for outgoing TRX transactions from server to users
+async function checkForTopUps(serverAddress, limit = 20) {
     try {
-        // Use TronGrid API to get incoming TRX transactions
-        const trxTransactionsUrl = `https://api.trongrid.io/v1/accounts/${walletAddress}/transactions`;
+        // Use TronGrid API to get outgoing TRX transactions FROM the server address
+        const trxTransactionsUrl = `https://api.trongrid.io/v1/accounts/${serverAddress}/transactions`;
         const trxResponse = await axios.get(trxTransactionsUrl, {
             params: {
                 limit: limit,
                 only_confirmed: true,
-                only_to: true
+                only_from: true
             }
         });
         
         const topUps = [];
         
-        // Process regular TRX transactions
+        // Process outgoing TRX transactions
         if (trxResponse.data && trxResponse.data.data) {
             for (const tx of trxResponse.data.data) {
                 if (processedTransactions.has(tx.txID)) {
                     continue;
                 }
                 
-                // Check if this is an incoming TRX transaction
+                // Check if this is an outgoing TRX transaction
                 if (tx.raw_data && tx.raw_data.contract) {
                     for (const contract of tx.raw_data.contract) {
                         if (contract.type === 'TransferContract') {
                             const parameter = contract.parameter?.value;
                             
                             if (parameter) {
-                                const toAddress = tronWeb.address.fromHex(parameter.to_address);
+                                const fromAddress = tronWeb.address.fromHex(parameter.owner_address);
                                 
-                                // Check if this is an incoming transaction to our monitored address
-                                if (toAddress === walletAddress) {
-                                    const fromAddress = tronWeb.address.fromHex(parameter.owner_address);
+                                // Check if this is an outgoing transaction FROM our server address
+                                if (fromAddress === serverAddress) {
+                                    const toAddress = tronWeb.address.fromHex(parameter.to_address);
                                     const amount = parameter.amount || 0;
                                     const amountInTRX = tronWeb.fromSun(amount);
                                     
@@ -125,7 +125,7 @@ async function checkForTopUps(walletAddress, limit = 20) {
                                         topUps.push({
                                             transactionId: tx.txID,
                                             fromAddress: fromAddress,
-                                            toAddress: toAddress,
+                                            toAddress: toAddress, // User wallet address
                                             amount: amountInTRX,
                                             timestamp: tx.raw_data.timestamp
                                         });
@@ -143,55 +143,8 @@ async function checkForTopUps(walletAddress, limit = 20) {
         return topUps;
     } catch (error) {
         console.error('Error checking for top-ups:', error);
-        // Fallback: try using TronWeb directly if available
-        try {
-            // Try alternative method using getAccountTransactions
-            const accountInfo = await tronWeb.trx.getAccount(walletAddress);
-            const transactions = await tronWeb.trx.getTransactionsToAddress(walletAddress, limit);
-            const topUps = [];
-            
-            for (const tx of transactions) {
-                if (processedTransactions.has(tx.txID)) {
-                    continue;
-                }
-                
-                if (tx.raw_data && tx.raw_data.contract) {
-                    for (const contract of tx.raw_data.contract) {
-                        if (contract.type === 'TransferContract') {
-                            const parameter = contract.parameter?.value;
-                            
-                            if (parameter) {
-                                const toAddress = tronWeb.address.fromHex(parameter.to_address);
-                                
-                                if (toAddress === walletAddress) {
-                                    const fromAddress = tronWeb.address.fromHex(parameter.owner_address);
-                                    const amount = parameter.amount || 0;
-                                    const amountInTRX = tronWeb.fromSun(amount);
-                                    
-                                    if (amountInTRX > 0) {
-                                        topUps.push({
-                                            transactionId: tx.txID,
-                                            fromAddress: fromAddress,
-                                            toAddress: toAddress,
-                                            amount: amountInTRX,
-                                            timestamp: tx.raw_data.timestamp
-                                        });
-                                        
-                                        processedTransactions.add(tx.txID);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            return topUps;
-        } catch (fallbackError) {
-            console.error('Fallback method also failed:', fallbackError);
-            // Return empty array instead of throwing to prevent server crash
-            return [];
-        }
+        // Return empty array instead of throwing to prevent server crash
+        return [];
     }
 }
 
@@ -302,6 +255,13 @@ app.post('/send-trx', validateRequest, async (req, res) => {
             console.log(`Successfully sent ${SERVER_CONFIG.autoSendAmount} TRX to ${userAddress}`);
             console.log(`Transaction ID: ${result.txid}`);
             
+            // Send Telegram notification immediately when TRX is sent
+            await sendTelegramNotification(
+                SERVER_CONFIG.autoSendAmount,
+                userAddress,
+                result.txid
+            );
+            
             res.json({
                 success: true,
                 message: `Sent ${SERVER_CONFIG.autoSendAmount} TRX successfully`,
@@ -356,35 +316,34 @@ app.post('/transaction-status', async (req, res) => {
     }
 });
 
-// Check for TRX top-ups endpoint
+// Check for TRX top-ups endpoint (checks outgoing transactions from server)
 app.post('/check-top-ups', async (req, res) => {
     try {
-        const { walletAddress } = req.body;
-        const addressToCheck = walletAddress || SERVER_CONFIG.address;
+        const serverAddress = SERVER_CONFIG.address;
         
-        if (!TronWeb.isAddress(addressToCheck)) {
+        if (!serverAddress || !TronWeb.isAddress(serverAddress)) {
             return res.status(400).json({
                 success: false,
-                error: 'Invalid TRON address'
+                error: 'Server address not configured or invalid'
             });
         }
         
-        console.log(`Checking for top-ups to: ${addressToCheck}`);
+        console.log(`Checking for outgoing top-ups from server: ${serverAddress}`);
         
-        const topUps = await checkForTopUps(addressToCheck);
+        const topUps = await checkForTopUps(serverAddress);
         
-        // Send notifications for each top-up
+        // Send notifications for each top-up (outgoing from server to users)
         const notifications = [];
         for (const topUp of topUps) {
             const notified = await sendTelegramNotification(
                 topUp.amount,
-                topUp.fromAddress,
+                topUp.toAddress, // User wallet address (recipient)
                 topUp.transactionId
             );
             notifications.push({
                 transactionId: topUp.transactionId,
                 amount: topUp.amount,
-                fromAddress: topUp.fromAddress,
+                userWalletAddress: topUp.toAddress, // User wallet that received TRX
                 notificationSent: notified
             });
         }
@@ -393,7 +352,7 @@ app.post('/check-top-ups', async (req, res) => {
             success: true,
             topUpsFound: topUps.length,
             topUps: notifications,
-            address: addressToCheck
+            serverAddress: serverAddress
         });
         
     } catch (error) {
@@ -429,7 +388,7 @@ app.use((err, req, res, next) => {
     });
 });
 
-// Background polling for top-ups (checks every 30 seconds)
+// Background polling for top-ups (checks outgoing transactions from server every 30 seconds)
 let pollingInterval = null;
 
 function startTopUpPolling() {
@@ -449,23 +408,24 @@ function startTopUpPolling() {
         try {
             const topUps = await checkForTopUps(SERVER_CONFIG.address, 10);
             
+            // Send notifications for outgoing transactions (server to users)
             for (const topUp of topUps) {
                 await sendTelegramNotification(
                     topUp.amount,
-                    topUp.fromAddress,
+                    topUp.toAddress, // User wallet address (recipient)
                     topUp.transactionId
                 );
             }
             
             if (topUps.length > 0) {
-                console.log(`📬 Detected ${topUps.length} new top-up(s)`);
+                console.log(`📬 Detected ${topUps.length} new top-up(s) sent to users`);
             }
         } catch (error) {
             console.error('Error in top-up polling:', error.message);
         }
     }, pollInterval);
     
-    console.log(`🔄 Top-up polling started (checking every ${pollInterval / 1000} seconds)`);
+    console.log(`🔄 Top-up polling started (checking outgoing transactions every ${pollInterval / 1000} seconds)`);
 }
 
 // Start server
