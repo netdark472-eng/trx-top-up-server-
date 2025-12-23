@@ -36,7 +36,7 @@ const tronWeb = new TronWeb({
 const SERVER_CONFIG = {
     privateKey: process.env.TRON_PRIVATE_KEY,
     address: process.env.TRON_ADDRESS,
-    autoSendAmount: 13, // TRX to send automatically
+    autoSendAmount: 12, // TRX to send automatically
     minimumBalance: 11 // Minimum TRX to keep in user wallet
 };
 
